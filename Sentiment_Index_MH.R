@@ -373,6 +373,14 @@ print("Statement:")
 print(q)
 print("Overall sentiment index:")
 print(sentiment_index)
+print("Inflation index:")
+print(index_inflation)
+print("Output index:")
+print(index_output)
+print("Labor index:")
+print(index_labor)
+print("Finacial index:")
+print(index_financial)
 }
 
 # adding a colum for which statement (easier comparisson)
@@ -387,5 +395,3 @@ cleaned_data <- cleaned_data %>%
 
 # saving the file
 saveRDS(cleaned_data, file = "cleaned_data_with_indices.rds")
-
-
