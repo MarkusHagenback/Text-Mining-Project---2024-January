@@ -1,191 +1,20 @@
-## Reading in the data //MH
-cleaned_data <- readRDS("./cleaned_data.rds") # //MH
-List_of_Keywords_and_Their_Scores <- read.csv("./List of Keywords and Their Scores.csv")
-List_of_Modifiers_and_Their_Scores<-read.csv("./List of Modifiers and Their Scores.csv")
-
-################################################################################################
-## step 0 ##
-
-## First need to clean the data from stop words etc.
-library(tm)
-library(dplyr)
-
-# First convert to date format
-cleaned_data$`Date of Announcement` <- as.Date(cleaned_data$`Date of Announcement`)
-
-# To corpus
-cleaned_data <- cleaned_data[,-c(3)]
-
-# Giving names to columns
-names(cleaned_data)<-c("doc_id","text")
-
-# Create a Corpus from the text column
-corpus <- Corpus(VectorSource(cleaned_data$text))
-
-# Convert to lowercase
-corpus <- tm_map(corpus, content_transformer(tolower))
-
-# Remove punctuation
-corpus <- tm_map(corpus, removePunctuation)
-
-# Remove numbers
-corpus <- tm_map(corpus, removeNumbers)
-
-# Remove common English stopwords
-corpus <- tm_map(corpus, removeWords, stopwords("english"))
-
-# Update the "Text" column in the original data frame with the cleaned text
-cleaned_data$text <- sapply(corpus, function(x) paste(unlist(x), collapse = " "))
-
-# Removing double spaces
-cleaned_data$text <- gsub("\\s+", " ", cleaned_data$text)
-
-################################################################################################
-# # # Individual statement # # #
-text <- cleaned_data[3,2]
-modifiers <-List_of_Modifiers_and_Their_Scores$modifier
-keywords <-List_of_Keywords_and_Their_Scores$keyword
-
-# Taking out the test in a txt file to be able to compare and to the index manually"
-word_vector <- cleaned_data[3,2]
-writeLines(word_vector, "output.txt")
-
-############
-# Tokenize the text into words
-words_in_text <- unlist(strsplit(tolower(text), "\\W+"))
-
-# Create a dateframe where each word is a column
-text_df <- data.frame(Word = words_in_text)
-
-# Will need the words in their original order
-text_df <- text_df %>%
-  mutate(OrderOfWords = row_number())
-text_df <- text_df %>%
-  select(OrderOfWords, everything())
-
-# Create a new column based on if there is a keyword match
-text_df$KeyWordMatchIndicator <- apply(text_df, 1, function(row) {
-  any(row %in% keywords)
-})
-text_df$KeyWordMatchIndicator <- as.numeric(text_df$KeyWordMatchIndicator)
-
-# Create a new column based on modifier match
-text_df$ModifierWordMatchIndicator <- apply(text_df, 1, function(row) {
-  any(row %in% modifiers)
-})
-text_df$ModifierWordMatchIndicator <- as.numeric(text_df$ModifierWordMatchIndicator)
-
-
-text_df$ClosestModifier <- NA
-# Loop over the length of KeyWordMatchIndicator
-for (i in seq_along(text_df$KeyWordMatchIndicator)) {
-  if (text_df$KeyWordMatchIndicator[i] == 0) {
-    # Nothing happens, we dont care
-  } else if (text_df$KeyWordMatchIndicator[i] == 1) {
-    matching_length_df <- list()
-    
-    # The position of the keyword = i. Now, we need to find the closest modifier
-    for (j in seq_along(text_df$ModifierWordMatchIndicator)) {
-      if (text_df$ModifierWordMatchIndicator[j] == 1) {
-        absolute_distance <- abs(j - i)
-        temp_data_frame <- data_frame(id = j, distance = absolute_distance)
-        
-        # Add the data frame to the list
-        matching_length_df <- c(matching_length_df, list(temp_data_frame))
-      }
-    
-    }
-    
-    combined_df <- do.call(rbind, matching_length_df)
-    
-    # Find the row with the minimum absolute distance
-    min_distance_row <- combined_df[which.min(combined_df$distance), ]
-    
-    # here we write down the closet match for each keyword, we write down the ID which is which word is it 
-    text_df$ClosestModifier[i] <- min_distance_row$id
-  }
-}
-
-# Let's create the pairs
-text_df$pairs <- NA
-text_df$PairWord <- NA
-for (i in seq_along(text_df$KeyWordMatchIndicator)) {
-  if (text_df$KeyWordMatchIndicator[i] == 0) {
-    # Nothing happens, we dont care
-  } else if (text_df$KeyWordMatchIndicator[i] == 1) {
-    
-    # Word[i] this is the keyword. Word['id of closetmodifiers] is the modifier
-    
-    print(text_df$Word[i])
-    print(text_df$Word[text_df$ClosestModifier[i]])
-    
-    text_df$pairs[i] <- paste(text_df$Word[i], text_df$Word[text_df$ClosestModifier[i]], sep = '-')
-    text_df$PairWord[i] <- paste(text_df$Word[text_df$ClosestModifier[i]])
-  }
-}
-## Now we need to put a value on the pairs
-names(List_of_Keywords_and_Their_Scores) <-c("Word", "KeyWordScore", "KeyWordTopic")
-names(List_of_Modifiers_and_Their_Scores) <-c("PairWord", "ModifiersScore", "ModifiersTopic")
-
-#Removing modifer-topic cause we use a global modifier topic
-List_of_Modifiers_and_Their_Scores<-List_of_Modifiers_and_Their_Scores[, -3] 
-# We also need to remove duplicates now
-List_of_Modifiers_and_Their_Scores <- List_of_Modifiers_and_Their_Scores %>%
-  distinct(PairWord)
-
-text_df <-merge(text_df,List_of_Keywords_and_Their_Scores, by = "Word", all.x = TRUE)
-text_df <-merge(text_df,List_of_Modifiers_and_Their_Scores, by = "PairWord", all.x = TRUE)
-
-# Calculate the product
-text_df$product <- text_df$KeyWordScore * text_df$ModifiersScore
-
-# Sentiment index for each topic
-
-# We have 4 topics only
-index_inflation <-0
-index_output <-0
-index_labor <-0
-index_financial <-0
-  
-for (i in seq_along(text_df$PairWord)) {
-    
-    if (!is.na(text_df$KeyWordTopic[i])) { 
-      
-      if (text_df$KeyWordTopic[i] == "inflation") {
-        index_inflation <- (index_inflation+text_df$product[i])
-      } else if (text_df$KeyWordTopic[i] == "output") {
-        index_output <- (index_output+text_df$product[i])
-      } else if (text_df$KeyWordTopic[i] == "labor") {
-        index_labor <- (index_labor+text_df$product[i])
-      } else if (text_df$KeyWordTopic[i] == "financial") {
-        index_financial <- (index_financial+text_df$product[i])
-      }
-      
-    }
-}
-
-# Creating the index for each topic by diving by the numbers of words in the statement
-num_words <- length(text_df$Word)
-index_inflation <- index_inflation/sqrt(num_words)
-index_output <- index_output/sqrt(num_words)
-index_labor <- index_labor/sqrt(num_words)
-index_financial <- index_financial/sqrt(num_words)
-
-# Creating an overall sentiment score by suming up all these 4 indices
-
-sentiment_index <- sum(index_inflation,index_output,index_labor,index_financial)
-########################
-
-# Now, let's loop it ## Start here
-
-########################### 
-
 ## Reading in the data 
 cleaned_data <- readRDS("./cleaned_data.rds") 
 List_of_Keywords_and_Their_Scores <- read.csv("./List of Keywords and Their Scores.csv")
 List_of_Modifiers_and_Their_Scores<-read.csv("./List of Modifiers and Their Scores.csv")
 
+###### Converting from US spelling to UK spelling
+library(uk2us)
+ukspelling <- convert_us2uk(List_of_Keywords_and_Their_Scores$keyword, crosswalk = uk2us::ukus_crosswalk) ## I save as a temporary vector in order to double check that it works properly
+
+List_of_Keywords_and_Their_Scores$keyword <-ukspelling
+
+ukspelling <- convert_us2uk(List_of_Modifiers_and_Their_Scores$modifier, crosswalk = uk2us::ukus_crosswalk) ## I save as a temporary vector in order to double check that it works properly
+
+List_of_Modifiers_and_Their_Scores$modifier <-ukspelling
+
 ################################################################################################
+
 ## step 0 ## First need to clean the data from stop words etc.
 
 # First convert to date format
@@ -383,7 +212,7 @@ print("Finacial index:")
 print(index_financial)
 }
 
-# adding a colum for which statement (easier comparisson)
+# adding a column for which statement (easier comparisson)
 cleaned_data <- cleaned_data %>%
   mutate(OrderColumn = row_number())
 # fixing the order 
@@ -395,3 +224,194 @@ cleaned_data <- cleaned_data %>%
 
 # saving the file
 saveRDS(cleaned_data, file = "cleaned_data_with_indices.rds")
+
+
+#################################
+
+# ### For only one statement, do not need to run, but this was the first step.
+# 
+# ## Reading in the data 
+# cleaned_data <- readRDS("./cleaned_data.rds") # //MH
+# List_of_Keywords_and_Their_Scores <- read.csv("./List of Keywords and Their Scores.csv")
+# List_of_Modifiers_and_Their_Scores<-read.csv("./List of Modifiers and Their Scores.csv")
+# 
+# ###### Converting from US spelling to UK spelling
+# library(uk2us)
+# ukspelling <- convert_us2uk(List_of_Keywords_and_Their_Scores$keyword, crosswalk = uk2us::ukus_crosswalk) ## I save as a temporary vector in order to double check that it works properly
+# 
+# List_of_Keywords_and_Their_Scores$keyword <-ukspelling
+# 
+# ukspelling <- convert_us2uk(List_of_Modifiers_and_Their_Scores$modifier, crosswalk = uk2us::ukus_crosswalk) ## I save as a temporary vector in order to double check that it works properly
+# 
+# List_of_Modifiers_and_Their_Scores$modifier <-ukspelling
+# ################################################################################################
+# ## step 0 ##
+# 
+# ## First need to clean the data from stop words etc.
+# library(tm)
+# library(dplyr)
+# 
+# # First convert to date format
+# cleaned_data$`Date of Announcement` <- as.Date(cleaned_data$`Date of Announcement`)
+# 
+# # To corpus
+# cleaned_data <- cleaned_data[,-c(3)]
+# 
+# # Giving names to columns
+# names(cleaned_data)<-c("doc_id","text")
+# 
+# # Create a Corpus from the text column
+# corpus <- Corpus(VectorSource(cleaned_data$text))
+# 
+# # Convert to lowercase
+# corpus <- tm_map(corpus, content_transformer(tolower))
+# 
+# # Remove punctuation
+# corpus <- tm_map(corpus, removePunctuation)
+# 
+# # Remove numbers
+# corpus <- tm_map(corpus, removeNumbers)
+# 
+# # Remove common English stopwords
+# corpus <- tm_map(corpus, removeWords, stopwords("english"))
+# 
+# # Update the "Text" column in the original data frame with the cleaned text
+# cleaned_data$text <- sapply(corpus, function(x) paste(unlist(x), collapse = " "))
+# 
+# # Removing double spaces
+# cleaned_data$text <- gsub("\\s+", " ", cleaned_data$text)
+# 
+# ################################################################################################
+# # # # Individual statement # # #
+# text <- cleaned_data[3,2]
+# modifiers <-List_of_Modifiers_and_Their_Scores$modifier
+# keywords <-List_of_Keywords_and_Their_Scores$keyword
+# 
+# # Taking out the test in a txt file to be able to compare and to the index manually"
+# word_vector <- cleaned_data[3,2]
+# writeLines(word_vector, "output.txt")
+# 
+# ############
+# # Tokenize the text into words
+# words_in_text <- unlist(strsplit(tolower(text), "\\W+"))
+# 
+# # Create a dateframe where each word is a column
+# text_df <- data.frame(Word = words_in_text)
+# 
+# # Will need the words in their original order
+# text_df <- text_df %>%
+#   mutate(OrderOfWords = row_number())
+# text_df <- text_df %>%
+#   select(OrderOfWords, everything())
+# 
+# # Create a new column based on if there is a keyword match
+# text_df$KeyWordMatchIndicator <- apply(text_df, 1, function(row) {
+#   any(row %in% keywords)
+# })
+# text_df$KeyWordMatchIndicator <- as.numeric(text_df$KeyWordMatchIndicator)
+# 
+# # Create a new column based on modifier match
+# text_df$ModifierWordMatchIndicator <- apply(text_df, 1, function(row) {
+#   any(row %in% modifiers)
+# })
+# text_df$ModifierWordMatchIndicator <- as.numeric(text_df$ModifierWordMatchIndicator)
+# 
+# 
+# text_df$ClosestModifier <- NA
+# # Loop over the length of KeyWordMatchIndicator
+# for (i in seq_along(text_df$KeyWordMatchIndicator)) {
+#   if (text_df$KeyWordMatchIndicator[i] == 0) {
+#     # Nothing happens, we dont care
+#   } else if (text_df$KeyWordMatchIndicator[i] == 1) {
+#     matching_length_df <- list()
+#     
+#     # The position of the keyword = i. Now, we need to find the closest modifier
+#     for (j in seq_along(text_df$ModifierWordMatchIndicator)) {
+#       if (text_df$ModifierWordMatchIndicator[j] == 1) {
+#         absolute_distance <- abs(j - i)
+#         temp_data_frame <- data_frame(id = j, distance = absolute_distance)
+#         
+#         # Add the data frame to the list
+#         matching_length_df <- c(matching_length_df, list(temp_data_frame))
+#       }
+#     
+#     }
+#     
+#     combined_df <- do.call(rbind, matching_length_df)
+#     
+#     # Find the row with the minimum absolute distance
+#     min_distance_row <- combined_df[which.min(combined_df$distance), ]
+#     
+#     # here we write down the closet match for each keyword, we write down the ID which is which word is it 
+#     text_df$ClosestModifier[i] <- min_distance_row$id
+#   }
+# }
+# 
+# # Let's create the pairs
+# text_df$pairs <- NA
+# text_df$PairWord <- NA
+# for (i in seq_along(text_df$KeyWordMatchIndicator)) {
+#   if (text_df$KeyWordMatchIndicator[i] == 0) {
+#     # Nothing happens, we dont care
+#   } else if (text_df$KeyWordMatchIndicator[i] == 1) {
+#     
+#     # Word[i] this is the keyword. Word['id of closetmodifiers] is the modifier
+#     
+#     print(text_df$Word[i])
+#     print(text_df$Word[text_df$ClosestModifier[i]])
+#     
+#     text_df$pairs[i] <- paste(text_df$Word[i], text_df$Word[text_df$ClosestModifier[i]], sep = '-')
+#     text_df$PairWord[i] <- paste(text_df$Word[text_df$ClosestModifier[i]])
+#   }
+# }
+# ## Now we need to put a value on the pairs
+# names(List_of_Keywords_and_Their_Scores) <-c("Word", "KeyWordScore", "KeyWordTopic")
+# names(List_of_Modifiers_and_Their_Scores) <-c("PairWord", "ModifiersScore", "ModifiersTopic")
+# 
+# #Removing modifer-topic cause we use a global modifier topic
+# List_of_Modifiers_and_Their_Scores<-List_of_Modifiers_and_Their_Scores[, -3] 
+# # We also need to remove duplicates now
+# List_of_Modifiers_and_Their_Scores <- List_of_Modifiers_and_Their_Scores %>%
+#   distinct(PairWord)
+# 
+# text_df <-merge(text_df,List_of_Keywords_and_Their_Scores, by = "Word", all.x = TRUE)
+# text_df <-merge(text_df,List_of_Modifiers_and_Their_Scores, by = "PairWord", all.x = TRUE)
+# 
+# # Calculate the product
+# text_df$product <- text_df$KeyWordScore * text_df$ModifiersScore
+# 
+# # Sentiment index for each topic
+# 
+# # We have 4 topics only
+# index_inflation <-0
+# index_output <-0
+# index_labor <-0
+# index_financial <-0
+#   
+# for (i in seq_along(text_df$PairWord)) {
+#     
+#     if (!is.na(text_df$KeyWordTopic[i])) { 
+#       
+#       if (text_df$KeyWordTopic[i] == "inflation") {
+#         index_inflation <- (index_inflation+text_df$product[i])
+#       } else if (text_df$KeyWordTopic[i] == "output") {
+#         index_output <- (index_output+text_df$product[i])
+#       } else if (text_df$KeyWordTopic[i] == "labor") {
+#         index_labor <- (index_labor+text_df$product[i])
+#       } else if (text_df$KeyWordTopic[i] == "financial") {
+#         index_financial <- (index_financial+text_df$product[i])
+#       }
+#       
+#     }
+# }
+# 
+# # Creating the index for each topic by diving by the numbers of words in the statement
+# num_words <- length(text_df$Word)
+# index_inflation <- index_inflation/sqrt(num_words)
+# index_output <- index_output/sqrt(num_words)
+# index_labor <- index_labor/sqrt(num_words)
+# index_financial <- index_financial/sqrt(num_words)
+# 
+# # Creating an overall sentiment score by suming up all these 4 indices
+# 
+# sentiment_index <- sum(index_inflation,index_output,index_labor,index_financial)
